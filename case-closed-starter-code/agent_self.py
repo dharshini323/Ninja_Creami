@@ -105,7 +105,7 @@ def send_move():
     # Basic defaults / hyperparams
     alpha = 0.1          # learning rate
     gamma = 0.9          # discount factor
-    epsilon = 0.1        # exploration probability (you can vary per-run)
+    epsilon = 0.05        # exploration probability (you can vary per-run)
 
     # Safety: ensure we have a board
     board_state = state.get("board")
@@ -271,7 +271,6 @@ def send_move():
 
     return jsonify({"move": move}), 200
 
-
 @app.route("/end", methods=["POST"])
 def end_game():
     """Judge notifies agent that the match finished and provides final state.
@@ -336,18 +335,21 @@ def end_game():
     return jsonify({"status": "acknowledged"}), 200
 
 
-# @app.route("/end", methods=["POST"])
-# def end_game():
-#     """Judge notifies agent that the match finished and provides final state.
 
-#     We update local state for record-keeping and return OK.
-#     """
-#     data = request.get_json()
-#     if data:
-#         _update_local_game_from_post(data)
-#     return jsonify({"status": "acknowledged"}), 200
+'''
+@app.route("/end", methods=["POST"])
+def end_game():
+    """Judge notifies agent that the match finished and provides final state.
+
+    We update local state for record-keeping and return OK.
+    """
+    data = request.get_json()
+    if data:
+        _update_local_game_from_post(data)
+    return jsonify({"status": "acknowledged"}), 200
+'''
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5008"))
+    port = int(os.environ.get("PORT", "5009"))
     app.run(host="0.0.0.0", port=port, debug=True)
