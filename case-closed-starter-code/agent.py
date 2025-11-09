@@ -109,7 +109,7 @@ def send_move():
     # if boosts_remaining > 0 and turn_count > 50:
     #     move = "RIGHT:BOOST"
 
-        # -----------------your code here-------------------
+         # -----------------your code here-------------------
 
     # Safety check for missing board
     board_state = state.get("board")
@@ -118,42 +118,29 @@ def send_move():
 
     HEIGHT, WIDTH = len(board_state), len(board_state[0])
 
-    # Current and opponent positions from trails
-    cur_pos = my_agent.trail[-1] if my_agent.trail else (0, 0)
+    # Current and opponent info (safe defaults)
+    cur_pos = (my_agent.trail[-1] if getattr(my_agent, "trail", None) else (0, 0))
     opp_agent = GLOBAL_GAME.agent2 if player_number == 1 else GLOBAL_GAME.agent1
-    opp_pos = opp_agent.trail[-1] if opp_agent.trail else (0, 0)
-    # Estimate opponent's last direction if possible
-    if len(opp_agent.trail) >= 2:
-        (x1, y1), (x2, y2) = list(opp_agent.trail)[-2:]
-        if x2 > x1:
-            opp_dir = "RIGHT"
-        elif x2 < x1:
-            opp_dir = "LEFT"
-        elif y2 > y1:
-            opp_dir = "DOWN"
-        else:
-            opp_dir = "UP"
-    else:
-        opp_dir = "UP"
+    opp_pos = (opp_agent.trail[-1] if getattr(opp_agent, "trail", None) else (WIDTH - 1, HEIGHT - 1))
+    opp_dir = getattr(opp_agent, "last_move", "UP")
 
-
-    # Build board marking trails
+    # Build board and mark trails
     board = [[0] * WIDTH for _ in range(HEIGHT)]
-    for (x, y) in my_agent.trail:
+    for (x, y) in getattr(my_agent, "trail", []):
         if 0 <= y < HEIGHT and 0 <= x < WIDTH:
             board[y][x] = 1
-    for (x, y) in opp_agent.trail:
+    for (x, y) in getattr(opp_agent, "trail", []):
         if 0 <= y < HEIGHT and 0 <= x < WIDTH:
             board[y][x] = 2
 
-    # Predict opponent’s next move
+    # Predict opponent next move
     dir_map = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
     dx, dy = dir_map.get(opp_dir, (0, -1))
     nx, ny = opp_pos[0] + dx, opp_pos[1] + dy
     if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
         board[ny][nx] = 2
 
-    # Neighbor function
+    # Neighbor exploration helper
     def neighbors(x, y):
         result = []
         for move, (dx, dy) in dir_map.items():
@@ -162,12 +149,12 @@ def send_move():
                 result.append((nx, ny, move))
         return result
 
-    # Simple A* to choose direction
-    def a_star(start):
+    # A* pathfinding (defensive core)
+    def a_star(start, target=None):
         frontier = [(0, start, [])]
         visited = set()
         while frontier:
-            _, (x, y), path = heapq.heappop(frontier)
+            cost, (x, y), path = heapq.heappop(frontier)
             if (x, y) in visited:
                 continue
             visited.add((x, y))
@@ -176,19 +163,51 @@ def send_move():
             for nx, ny, move in neighbors(x, y):
                 if (nx, ny) not in visited:
                     h = abs(nx - WIDTH // 2) + abs(ny - HEIGHT // 2)
-                    heapq.heappush(frontier, (len(path) + 1 + h, (nx, ny), path + [move]))
+                    heapq.heappush(frontier, (cost + 1 + h, (nx, ny), path + [move]))
         return "UP"
 
-    move = a_star(cur_pos)
+    # Flood-fill to measure space (for defensive vs aggressive mode)
+    def flood_fill(start):
+        seen = set()
+        q = [start]
+        while q:
+            x, y = q.pop()
+            if (x, y) in seen:
+                continue
+            seen.add((x, y))
+            for nx, ny, _ in neighbors(x, y):
+                if (nx, ny) not in seen:
+                    q.append((nx, ny))
+        return len(seen)
 
-    # Use boost only when safe
-    if boosts_remaining > 0:
-        safe_neighbors = neighbors(cur_pos[0], cur_pos[1])
-        if len(safe_neighbors) >= 2:
-            move += ":BOOST"
+    my_space = flood_fill(cur_pos)
+    opp_space = flood_fill(opp_pos)
+
+    # Strategy switch
+    aggressive = my_space > opp_space * 1.5
+
+    if aggressive:
+        # Try to push closer to opponent
+        dx = opp_pos[0] - cur_pos[0]
+        dy = opp_pos[1] - cur_pos[1]
+        if abs(dx) > abs(dy):
+            move = "RIGHT" if dx > 0 else "LEFT"
+        else:
+            move = "DOWN" if dy > 0 else "UP"
+        # If move blocked, fallback to A*
+        nx, ny = cur_pos[0] + dir_map[move][0], cur_pos[1] + dir_map[move][1]
+        if not (0 <= nx < WIDTH and 0 <= ny < HEIGHT and board[ny][nx] == 0):
+            move = a_star(cur_pos)
+    else:
+        # Defensive: stay in open space
+        move = a_star(cur_pos)
+
+    # Use boost only when clearly safe (wide open space)
+    safe_neighbors = neighbors(cur_pos[0], cur_pos[1])
+    if boosts_remaining > 0 and len(safe_neighbors) >= 3:
+        move += ":BOOST"
 
     # -----------------end code here--------------------
-
 
     # -----------------end code here--------------------
 
