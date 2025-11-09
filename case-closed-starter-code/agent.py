@@ -6,6 +6,9 @@ from collections import deque
 
 from case_closed_game import Game, Direction, GameResult
 
+#My imports
+import heapq
+
 # Flask API server setup
 app = Flask(__name__)
 
@@ -78,6 +81,7 @@ def receive_state():
 
 
 @app.route("/send-move", methods=["GET"])
+
 def send_move():
     """Judge calls this (GET) to request the agent's move for the current tick.
 
@@ -106,124 +110,85 @@ def send_move():
     #     move = "RIGHT:BOOST"
 
         # -----------------your code here-------------------
-    
-    AGENT = 1
 
-    from collections import deque as _deque
+    # Safety check for missing board
+    board_state = state.get("board")
+    if not board_state:
+        return jsonify({"move": "UP"}), 200
 
-    def torus_norm(pos):
-        x, y = pos
-        return (x % GLOBAL_GAME.board.width, y % GLOBAL_GAME.board.height)
+    HEIGHT, WIDTH = len(board_state), len(board_state[0])
 
-    def add(a,b):
-        return (a[0]+b[0], a[1]+b[1])
-
-    # Map Direction enum to strings expected by judge
-    dir_to_str = {Direction.UP: "UP", Direction.DOWN: "DOWN", Direction.LEFT: "LEFT", Direction.RIGHT: "RIGHT"}
-
-    # Opposite check helper
-    cur_dx, cur_dy = my_agent.direction.value
-    opposites = {(-cur_dx, -cur_dy)}
-
-    # Candidate directions (exclude exact opposite)
-    candidates = []
-    for d in [Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT]:
-        req_dx, req_dy = d.value
-        if (req_dx, req_dy) == (-cur_dx, -cur_dy):
-            continue
-        candidates.append(d)
-
-    board_grid = None
-    if state.get("board") is not None:
-        board_grid = state["board"]
+    # Current and opponent positions from trails
+    cur_pos = my_agent.trail[-1] if my_agent.trail else (0, 0)
+    opp_agent = GLOBAL_GAME.agent2 if player_number == 1 else GLOBAL_GAME.agent1
+    opp_pos = opp_agent.trail[-1] if opp_agent.trail else (0, 0)
+    # Estimate opponent's last direction if possible
+    if len(opp_agent.trail) >= 2:
+        (x1, y1), (x2, y2) = list(opp_agent.trail)[-2:]
+        if x2 > x1:
+            opp_dir = "RIGHT"
+        elif x2 < x1:
+            opp_dir = "LEFT"
+        elif y2 > y1:
+            opp_dir = "DOWN"
+        else:
+            opp_dir = "UP"
     else:
-        # fallback to local GLOBAL_GAME copy
-        board_grid = GLOBAL_GAME.board.grid
+        opp_dir = "UP"
 
-    H = GLOBAL_GAME.board.height
-    W = GLOBAL_GAME.board.width
 
-    def cell_blocked(grid, p):
-        x,y = p
-        x %= W; y %= H
-        return grid[y][x] != 0
+    # Build board marking trails
+    board = [[0] * WIDTH for _ in range(HEIGHT)]
+    for (x, y) in my_agent.trail:
+        if 0 <= y < HEIGHT and 0 <= x < WIDTH:
+            board[y][x] = 1
+    for (x, y) in opp_agent.trail:
+        if 0 <= y < HEIGHT and 0 <= x < WIDTH:
+            board[y][x] = 2
 
-    # Flood fill to count reachable empty cells from start (treat all non-zero as walls)
-    def reachable_area_after(grid, start):
-        seen = set()
-        q = _deque([start])
-        seen.add(start)
-        count = 0
-        while q:
-            x,y = q.popleft()
-            if grid[y][x] != 0:
+    # Predict opponent’s next move
+    dir_map = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
+    dx, dy = dir_map.get(opp_dir, (0, -1))
+    nx, ny = opp_pos[0] + dx, opp_pos[1] + dy
+    if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+        board[ny][nx] = 2
+
+    # Neighbor function
+    def neighbors(x, y):
+        result = []
+        for move, (dx, dy) in dir_map.items():
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < WIDTH and 0 <= ny < HEIGHT and board[ny][nx] == 0:
+                result.append((nx, ny, move))
+        return result
+
+    # Simple A* to choose direction
+    def a_star(start):
+        frontier = [(0, start, [])]
+        visited = set()
+        while frontier:
+            _, (x, y), path = heapq.heappop(frontier)
+            if (x, y) in visited:
                 continue
-            count += 1
-            for dx,dy in [(0,1),(0,-1),(1,0),(-1,0)]:
-                nx = (x+dx) % W
-                ny = (y+dy) % H
-                if (nx,ny) in seen:
-                    continue
-                if grid[ny][nx] != 0:
-                    seen.add((nx,ny))  # mark walls too to avoid rechecking
-                    continue
-                seen.add((nx,ny))
-                q.append((nx,ny))
-        return count
+            visited.add((x, y))
+            if len(path) >= 1:
+                return path[0]
+            for nx, ny, move in neighbors(x, y):
+                if (nx, ny) not in visited:
+                    h = abs(nx - WIDTH // 2) + abs(ny - HEIGHT // 2)
+                    heapq.heappush(frontier, (len(path) + 1 + h, (nx, ny), path + [move]))
+        return "UP"
 
-    # Simulate a candidate move on a shallow copy of the board grid
-    def simulate_and_score(direction, use_boost=False):
-        # shallow copy of grid (list of lists)
-        sim = [row[:] for row in board_grid]
-        # locate my current head
-        my_trail = list(my_agent.trail)
-        head = my_trail[-1]
-        dx,dy = direction.value
+    move = a_star(cur_pos)
 
-        moves = 2 if use_boost else 1
-        cur = head
-        for _ in range(moves):
-            cur = ((cur[0] + dx) % W, (cur[1] + dy) % H)
-            # collision with any agent/trail -> immediate low score
-            if sim[cur[1]][cur[0]] != 0:
-                return -1  # immediate death -> worst
-            # leave trail
-            sim[cur[1]][cur[0]] = AGENT
-        # compute reachable area from new head position
-        return reachable_area_after(sim, cur)
-
-    # Evaluate all candidate moves (with and without boost if available)
-    best_move = None
-    best_score = -999999
-    best_use_boost = False
-
-    turn_count = state.get("turn_count", state.get("turns", 0))
-
-    for d in candidates:
-        score = simulate_and_score(d, use_boost=False)
-        if score > best_score:
-            best_score = score
-            best_move = d
-            best_use_boost = False
-
-        # try boost if available
-        if boosts_remaining > 0:
-            score_b = simulate_and_score(d, use_boost=True)
-            # prefer boost only if it improves area significantly
-            if score_b > best_score + 4:  # threshold (tunable)
-                best_score = score_b
-                best_move = d
-                best_use_boost = True
-
-    # safety fallback: if all moves death (-1), keep current direction (will be forced by judge)
-    if best_move is None:
-        move = dir_to_str[my_agent.direction]
-    else:
-        move = dir_to_str[best_move]
-        if best_use_boost:
-            move = f"{move}:BOOST"
+    # Use boost only when safe
+    if boosts_remaining > 0:
+        safe_neighbors = neighbors(cur_pos[0], cur_pos[1])
+        if len(safe_neighbors) >= 2:
+            move += ":BOOST"
 
     # -----------------end code here--------------------
+
 
     # -----------------end code here--------------------
 
